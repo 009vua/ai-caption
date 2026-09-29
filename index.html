@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>AI Viết Bài Từ Ảnh - Gemini</title>
+  <title>AI Viết Bài Từ Ảnh - Gemini • V7.0</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -91,12 +91,44 @@
       color: #6b7280;
       margin: 4px 0 0;
     }
+  
+    .buildbox {
+      margin: 12px 0 2px;
+      padding: 12px 14px;
+      border: 1px solid #d1d5db;
+      border-radius: 14px;
+      background: #fff;
+      line-height: 1.55;
+      font-size: 14px;
+    }
+    .buildbox strong { font-size: 15px; }
+    .modelbox {
+      margin-top: 10px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .modelbox .big {
+      display: block;
+      margin-top: 3px;
+      font-weight: 800;
+      font-size: 17px;
+    }
+
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>AI viết bài từ hình ảnh</h1>
     <p class="sub">Chọn ảnh → Gemini phân tích → tự viết caption Facebook bằng tiếng Việt.</p>
+
+    <div class="buildbox">
+      <strong>Phiên bản đang chạy: V7.0</strong><br>
+      Build: 29/09/2026 • Ưu tiên Gemini 3.6 Flash • Dự phòng Gemini 3.5 Flash-Lite
+    </div>
 
     <div class="card">
       <label for="apiKey">Gemini API key</label>
@@ -135,7 +167,12 @@
         <button id="copyBtn" class="secondary">Sao chép</button>
       </div>
       <div id="status" class="status"></div>
-      <p class="note">V6: ưu tiên Gemini 3.6 Flash. Nếu 3.6 quá tải (429/5xx), trang sẽ tự thử lại rồi chuyển sang Gemini 3.5 Flash-Lite.</p>
+      <div class="modelbox">
+        Trạng thái model:
+        <span id="modelState" class="big">Chưa phân tích ảnh</span>
+        <span id="attemptState">Chờ bạn bấm “Tạo bài đăng”.</span>
+      </div>
+      <p class="note">V7 tự hiện chính xác model mà code đang gọi. Nếu 3.6 quá tải, trạng thái sẽ đổi sang 3.5 Flash-Lite ngay khi fallback bắt đầu.</p>
 
       <label for="result" style="margin-top:12px;">2. Caption</label>
       <textarea id="result" placeholder="Caption do Gemini tạo sẽ hiện ở đây..."></textarea>
@@ -143,6 +180,7 @@
   </div>
 
 <script>
+const APP_VERSION = "V7.0";
 const PRIMARY_MODEL = "gemini-3.6-flash";
 const FALLBACK_MODEL = "gemini-3.5-flash-lite";
 
@@ -158,6 +196,8 @@ const result = $("result");
 const status = $("status");
 const generateBtn = $("generateBtn");
 const copyBtn = $("copyBtn");
+const modelState = $("modelState");
+const attemptState = $("attemptState");
 
 const savedKey = localStorage.getItem("gemini_api_key");
 if (savedKey) {
@@ -264,6 +304,12 @@ Ghi chú thêm: ${extra || "không có"}
 }
 
 
+
+function setModelState(modelLabel, detail = "") {
+  modelState.textContent = modelLabel;
+  attemptState.textContent = detail;
+}
+
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function isRetryableStatus(code) {
@@ -301,12 +347,14 @@ async function requestGemini(model, key, img, prompt) {
             { text: prompt }
           ]
         }],
-        generationConfig: {
-          maxOutputTokens: 2048,
-          thinkingConfig: {
-            thinkingLevel: "minimal"
-          }
-        }
+        generationConfig: model === PRIMARY_MODEL
+          ? {
+              maxOutputTokens: 2048,
+              thinkingConfig: { thinkingLevel: "minimal" }
+            }
+          : {
+              maxOutputTokens: 2048
+            }
       })
     }
   );
@@ -335,12 +383,16 @@ async function runModelWithRetry({
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1) {
       const waitMs = delays[attempt - 2] ?? 2000;
+      setModelState(label, `Chuẩn bị thử lần ${attempt}/${attempts} sau ${Math.round(waitMs / 1000)} giây...`);
       status.textContent =
         `⏳ ${label} đang bận. Tự thử lại ${attempt}/${attempts} sau ${Math.round(waitMs / 1000)} giây...`;
       await sleep(waitMs);
     } else {
-      status.textContent = `🤖 Đang dùng ${label}...`;
+      setModelState(label, `Đang phân tích ảnh — lần ${attempt}/${attempts}`);
+      status.textContent = `🤖 Đang phân tích ảnh bằng ${label} — lần ${attempt}/${attempts}...`;
     }
+
+    setModelState(label, `Đang gửi yêu cầu — lần ${attempt}/${attempts}`);
 
     try {
       const { response, data } = await requestGemini(model, key, img, prompt);
@@ -362,6 +414,7 @@ async function runModelWithRetry({
           };
         }
 
+        setModelState(label, `Đã nhận phản hồi — lần ${attempt}/${attempts}`);
         return {
           ok: true,
           text,
@@ -373,6 +426,7 @@ async function runModelWithRetry({
 
       const code = response.status;
       const rawMessage = data?.error?.message || "";
+      setModelState(label, `Lỗi HTTP ${code} — lần ${attempt}/${attempts}`);
       last = {
         ok: false,
         code,
@@ -387,6 +441,7 @@ async function runModelWithRetry({
       // fetch() network errors arrive here. Treat them as retryable.
       if (err?.terminal) return err;
 
+      setModelState(label, `Lỗi kết nối — lần ${attempt}/${attempts}`);
       last = {
         ok: false,
         code: err?.code || 0,
@@ -419,6 +474,7 @@ generateBtn.addEventListener("click", async () => {
   generateBtn.disabled = true;
   generateBtn.textContent = "Đang tạo...";
   result.value = "";
+  setModelState("Chuẩn bị Gemini 3.6 Flash", "Đang chuẩn bị ảnh trước khi gửi API.");
 
   try {
     status.textContent = "🖼️ Đang tối ưu ảnh trên điện thoại...";
@@ -444,6 +500,7 @@ generateBtn.addEventListener("click", async () => {
 
     // If 3.6 is still busy, automatically switch to Flash-Lite.
     if (!answer.ok) {
+      setModelState("Gemini 3.5 Flash-Lite", "3.6 không phản hồi sau các lần thử. Đang chuyển model...");
       status.textContent =
         "🔄 Gemini 3.6 vẫn đang bận. Đang tự chuyển sang Gemini 3.5 Flash-Lite...";
       await sleep(700);
@@ -472,9 +529,11 @@ generateBtn.addEventListener("click", async () => {
     result.value = answer.text;
 
     if (answer.finishReason === "MAX_TOKENS") {
+      setModelState(answer.label, "⚠️ Hoàn tất nhưng bị chạm giới hạn token.");
       status.textContent =
         `⚠️ ${answer.label} đã tạo bài nhưng bị chạm giới hạn token. Hãy bấm Tạo bài đăng lại.`;
     } else {
+      setModelState(answer.label, "✅ Hoàn tất — caption phía dưới.");
       status.textContent =
         `✅ Đã tạo xong bằng ${answer.label}. Ảnh gửi API: ${img.width}×${img.height}, ` +
         `${kb(img.optimizedBytes)} KB (ảnh gốc ${kb(img.originalBytes)} KB).`;
@@ -482,6 +541,7 @@ generateBtn.addEventListener("click", async () => {
 
   } catch (err) {
     console.error(err);
+    attemptState.textContent = "❌ Lần xử lý này thất bại. Model cuối cùng vẫn được giữ ở trên để bạn kiểm tra.";
     status.textContent = "❌ " + (err?.message || "Có lỗi không xác định.");
   } finally {
     generateBtn.disabled = false;
